@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>站位封存包</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1050px;margin:32px auto;padding:0 18px}input,select,textarea,button{padding:7px;margin:3px}.card{border:1px solid #d9e1e8;border-radius:10px;padding:16px;margin:16px 0}pre{background:#f5f7f9;padding:12px;overflow:auto;width:100%;box-sizing:border-box}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}small{color:#667}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e3e8ee;padding:6px 8px;text-align:left}.missing{color:#b3261e}.ok{color:#1a7f37}</style></head>
+<body><h1>站位封存包（岸端归档）</h1><p>同一站位只保留一个待办包。样本未确认、缺少保管交接或仪器文件未关联本站位时，下面会列出缺项并挡住封存；封存会冻结清单与文件哈希，之后补传的文件进入下一版，旧版本始终可查。<a href="/">返回同步页</a></p>
+<div class="card"><h2>身份</h2><input id="user" value="lead-01"><select id="role"><option>lead</option><option>member</option></select><button onclick="loadPackages()">刷新列表</button></div>
+<div class="card"><h2>站位待办包</h2><div id="packages">加载中…</div></div>
+<div class="card"><h2>包详情</h2><div id="detail">在列表中选择站位查看缺项与版本。</div></div>
+<script>
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const auth=()=>({'Content-Type':'application/json','X-User':user.value,'X-Role':role.value});
+async function call(url,opts={}){const r=await fetch(url,opts);const j=await r.json();if(!r.ok){const e=new Error(j.error||r.status);e.missing=j.missing||[];throw e}return j}
+async function loadPackages(){
+  try{
+    const {items}=await call('/api/archive');
+    if(!items.length){packages.innerHTML='<small>还没有站位，请先在同步页上传。</small>';return}
+    packages.innerHTML='<table><tr><th>站位</th><th>样本</th><th>本站位文件</th><th>状态</th><th>已封存版本</th><th></th></tr>'+items.map(p=>
+      `<tr><td>${esc(p.station_code)}</td><td>${p.sample_count}</td><td>${p.file_count}</td>`+
+      `<td>${p.sealable?'<span class="ok">可封存</span>':`<span class="missing">缺 ${p.missing_count} 项</span>`}</td>`+
+      `<td>${p.sealed_versions}</td><td><button onclick="loadDetail(${p.station_id})">查看</button></td></tr>`).join('')+'</table>';
+  }catch(e){packages.textContent=e.message}
+}
+async function loadDetail(stationId){
+  try{
+    const d=await call(`/api/archive/${stationId}`);
+    const miss=d.missing.length?`<ul class="missing">${d.missing.map(m=>`<li>${esc(m.message)}</li>`).join('')}</ul>`:'<p class="ok">无缺项，可以封存。</p>';
+    const versions=d.versions.length?d.versions.map(v=>
+      `<div class="card"><b>第 ${v.version} 版</b> <small>${esc(v.sealed_by)} · ${esc(v.sealed_at)}</small><br>`+
+      `<small>清单哈希 ${esc(v.manifest_hash)}</small><pre>${esc(JSON.stringify(v.manifest,null,2))}</pre></div>`).join(''):'<small>还没有封存版本。</small>';
+    detail.innerHTML=`<p>站位 <b>${esc(d.station.station_code)}</b>（包 #${d.package_id}）：样本 ${d.samples.length}（已确认 ${d.samples.filter(s=>s.confirmed).length}），交接 ${d.custody.length} 条，本站位文件 ${d.files.length} 个。</p>`+
+      `<h3>缺项</h3>${miss}`+
+      `<button ${d.sealable?'':'disabled'} onclick="seal(${stationId})">封存第 ${d.next_version} 版</button> <span id="sealMsg"></span>`+
+      `<h3>历史版本</h3>${versions}`;
+  }catch(e){detail.textContent=e.message}
+}
+async function seal(stationId){
+  let msg;
+  try{
+    const v=await call(`/api/archive/${stationId}/seal`,{method:'POST',headers:auth(),body:'{}'});
+    msg=v.duplicate?`清单未变化，仍指向第 ${v.version} 版。`:`已封存第 ${v.version} 版，清单哈希 ${v.manifest_hash.slice(0,16)}…`;
+  }catch(e){
+    msg='封存被挡住：'+e.message+(e.missing.length?'（'+e.missing.map(m=>m.message).join('；')+'）':'');
+  }
+  await loadDetail(stationId);
+  const el=document.getElementById('sealMsg');if(el)el.textContent=msg;
+  loadPackages();
+}
+loadPackages();
+</script></body></html>

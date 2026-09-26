@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from archive_store import ArchiveError, ArchiveStore
+
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "ocean_samples.db"
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -472,6 +474,7 @@ def seed_demo(db: Database) -> dict[str, int]:
 
 class Handler(BaseHTTPRequestHandler):
     db: Database
+    archives: ArchiveStore
     server_version = "OceanSamples/1.0"
 
     def _send(self, payload: Any, status: int = 200) -> None:
@@ -482,8 +485,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _html(self) -> None:
-        data = (ROOT / "static" / "index.html").read_bytes()
+    def _html(self, name: str = "index.html") -> None:
+        data = (ROOT / "static" / name).read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -507,8 +510,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path in {"/", "/index.html"}:
                 return self._html()
+            if parsed.path == "/archive.html":
+                return self._html("archive.html")
             if parsed.path == "/api/health":
                 return self._send({"ok": True})
+            actor, _ = self._auth()
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts[:2] == ["api", "archive"]:
+                if len(parts) == 2:
+                    return self._send({"items": self.archives.list_packages(actor)})
+                if len(parts) == 3:
+                    return self._send(self.archives.evaluate(int(parts[2]), actor))
             endpoints = {
                 "/api/voyages": self.db.list_voyages,
                 "/api/stations": self.db.list_stations,
@@ -521,6 +533,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in endpoints:
                 return self._send({"items": endpoints[parsed.path]()})
             raise DomainError("接口不存在", 404)
+        except ArchiveError as exc:
+            self._send({"error": str(exc), "missing": exc.missing}, exc.status)
         except (ValueError, DomainError) as exc:
             self._send({"error": str(exc)}, getattr(exc, "status", 400))
 
@@ -534,9 +548,13 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/sync":
                 return self._send(self.db.sync(actor, role, body))
             parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) == 4 and parts[:2] == ["api", "archive"] and parts[3] == "seal":
+                return self._send(self.archives.seal(int(parts[2]), actor, role), 201)
             if len(parts) == 4 and parts[:2] == ["api", "confirm"]:
                 return self._send(self.db.confirm(parts[2], int(parts[3]), actor, role))
             raise DomainError("接口不存在", 404)
+        except ArchiveError as exc:
+            self._send({"error": str(exc), "missing": exc.missing}, exc.status)
         except (ValueError, TypeError, DomainError) as exc:
             self._send({"error": str(exc)}, getattr(exc, "status", 400))
 
@@ -556,6 +574,7 @@ def main() -> None:
         print(f"initialized database at {args.db}; voyage={result['voyage']}")
         return
     Handler.db = db
+    Handler.archives = ArchiveStore(db)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"ocean-samples listening on http://127.0.0.1:{args.port} (db={args.db})")
     server.serve_forever()

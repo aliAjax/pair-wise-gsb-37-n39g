@@ -42,11 +42,24 @@ python app.py --port 8008
 - 保管交接是追加式事件；仪器文件以 SHA-256 去重，原始内容相同但来自不同设备时只保存一次元数据。
 - 航次、站位、样本、交接、文件和冲突都保存在 SQLite 中，所有同步批次有审计记录。
 
+## 站位封存包
+
+岸端归档在 `/archive.html`。同一站位只保留一个待办包，页面会列出缺项并挡住封存：
+
+- 站位还没有样本，或样本未经负责人确认；
+- 样本缺少保管交接记录；
+- 没有关联本站位的仪器文件。
+
+封存（`lead`）把当时的清单与文件哈希冻结成一个版本，清单整体再算 SHA-256 作为版本指纹。清单未变化时重复封存指向同一版本；之后补传的文件进入下一次封存的新版本，旧版本始终可查。存档数据（`archive_store.py`）、归档判定（`archive_rules.py`）与页面（`static/archive.html`）分开实现，仍只用标准库。
+
 ## API
 
 - `POST /api/voyages`：创建航次。
 - `POST /api/sync`：批量同步离线记录。
 - `POST /api/confirm/station/{id}` 或 `/api/confirm/sample/{id}`：负责人确认锁定。
+- `GET /api/archive`：各站位待办包汇总（缺项数、是否可封存、已封存版本数）。
+- `GET /api/archive/{station_id}`：待办包详情，列出缺项与历史版本清单。
+- `POST /api/archive/{station_id}/seal`：负责人封存；有缺项时返回 409 与缺项清单。
 - `GET /api/stations`、`/api/samples`、`/api/custody`、`/api/instrument-files`：查询记录。
 - `GET /api/conflicts`：查看编号冲突、旧修订和权限冲突。
 - `GET /api/audit`：查看操作审计。
@@ -57,4 +70,4 @@ python app.py --port 8008
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖完整离线同步、幂等重复、编号冲突、成员越权、旧修订、确认锁定、追加式交接和文件哈希去重。
+测试覆盖完整离线同步、幂等重复、编号冲突、成员越权、旧修订、确认锁定、追加式交接、文件哈希去重，以及封存包缺项阻挡、清单冻结、补传文件另起新版和旧版本可查。
