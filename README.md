@@ -42,11 +42,25 @@ python app.py --port 8008
 - 保管交接是追加式事件；仪器文件以 SHA-256 去重，原始内容相同但来自不同设备时只保存一次元数据。
 - 航次、站位、样本、交接、文件和冲突都保存在 SQLite 中，所有同步批次有审计记录。
 
+## 站位封存（岸端归档）
+
+靠港后岸端把每个站位的水样、保管交接和仪器文件收成一个封存包：
+
+- 同一站位始终保留一个待办包（`pending`），首次查看或封存时自动建立。
+- 存在缺项时不能封存：站位没有样本、样本未确认、样本缺少保管交接、仪器文件未关联本站位。`GET /api/archive/station/{id}` 返回缺项清单，页面会列出缺项并禁用封存按钮，服务端同样以 409 拦截。
+- 封存（`POST /api/archive/station/{id}/seal`，仅 `lead`）把当时的清单和文件 SHA-256 冻结进包内；`manifest_hash` 是冻结清单正文的 SHA-256，可随时重新计算校验。
+- 封存后自动另起下一版待办包；之后补传的文件只进入新版本，旧版本继续可查。
+
+存档数据（`archive_store.py`）、归档判定（`archive_rules.py`）和页面（`static/index.html`）分开实现，不引入新依赖。
+
 ## API
 
 - `POST /api/voyages`：创建航次。
 - `POST /api/sync`：批量同步离线记录。
 - `POST /api/confirm/station/{id}` 或 `/api/confirm/sample/{id}`：负责人确认锁定。
+- `GET /api/archive/station/{id}`：查看该站位待办包版本与缺项清单。
+- `POST /api/archive/station/{id}/seal`：负责人封存当前待办包并另起下一版。
+- `GET /api/archives`、`GET /api/archives/{id}`：查询历史封存包与冻结清单。
 - `GET /api/stations`、`/api/samples`、`/api/custody`、`/api/instrument-files`：查询记录。
 - `GET /api/conflicts`：查看编号冲突、旧修订和权限冲突。
 - `GET /api/audit`：查看操作审计。
@@ -57,4 +71,4 @@ python app.py --port 8008
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖完整离线同步、幂等重复、编号冲突、成员越权、旧修订、确认锁定、追加式交接和文件哈希去重。
+测试覆盖完整离线同步、幂等重复、编号冲突、成员越权、旧修订、确认锁定、追加式交接、文件哈希去重，以及封存缺项拦截、清单冻结、版本递进和单待办包约束。

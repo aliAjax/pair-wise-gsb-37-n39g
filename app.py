@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+
+from archive_store import ArchiveError, ArchiveStore
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "ocean_samples.db"
@@ -472,6 +474,7 @@ def seed_demo(db: Database) -> dict[str, int]:
 
 class Handler(BaseHTTPRequestHandler):
     db: Database
+    archives: ArchiveStore
     server_version = "OceanSamples/1.0"
 
     def _send(self, payload: Any, status: int = 200) -> None:
@@ -481,6 +484,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _fail(self, exc: Exception) -> None:
+        payload: dict[str, Any] = {"error": str(exc)}
+        details = getattr(exc, "details", None)
+        if details:
+            payload["details"] = details
+        self._send(payload, getattr(exc, "status", 400))
 
     def _html(self) -> None:
         data = (ROOT / "static" / "index.html").read_bytes()
@@ -520,9 +530,17 @@ class Handler(BaseHTTPRequestHandler):
             }
             if parsed.path in endpoints:
                 return self._send({"items": endpoints[parsed.path]()})
+            parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) == 4 and parts[:3] == ["api", "archive", "station"]:
+                return self._send(self.archives.station_status(int(parts[3])))
+            if parsed.path == "/api/archives":
+                station_id = parse_qs(parsed.query).get("station_id", [None])[0]
+                return self._send({"items": self.archives.list_packages(int(station_id) if station_id else None)})
+            if len(parts) == 3 and parts[:2] == ["api", "archives"]:
+                return self._send(self.archives.get_package(int(parts[2])))
             raise DomainError("接口不存在", 404)
-        except (ValueError, DomainError) as exc:
-            self._send({"error": str(exc)}, getattr(exc, "status", 400))
+        except (ValueError, TypeError, DomainError, ArchiveError) as exc:
+            self._fail(exc)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -536,9 +554,11 @@ class Handler(BaseHTTPRequestHandler):
             parts = [p for p in parsed.path.split("/") if p]
             if len(parts) == 4 and parts[:2] == ["api", "confirm"]:
                 return self._send(self.db.confirm(parts[2], int(parts[3]), actor, role))
+            if len(parts) == 5 and parts[:3] == ["api", "archive", "station"] and parts[4] == "seal":
+                return self._send(self.archives.seal_station(int(parts[3]), actor, role), 201)
             raise DomainError("接口不存在", 404)
-        except (ValueError, TypeError, DomainError) as exc:
-            self._send({"error": str(exc)}, getattr(exc, "status", 400))
+        except (ValueError, TypeError, DomainError, ArchiveError) as exc:
+            self._fail(exc)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ocean] {self.address_string()} - {fmt % args}")
@@ -551,11 +571,13 @@ def main() -> None:
     parser.add_argument("--init", action="store_true", help="创建数据库与示例航次")
     args = parser.parse_args()
     db = Database(args.db)
+    archives = ArchiveStore(args.db)
     if args.init:
         result = seed_demo(db)
         print(f"initialized database at {args.db}; voyage={result['voyage']}")
         return
     Handler.db = db
+    Handler.archives = archives
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"ocean-samples listening on http://127.0.0.1:{args.port} (db={args.db})")
     server.serve_forever()
